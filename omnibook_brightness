@@ -1,0 +1,14 @@
+#!/bin/sh
+# PROVIDE: omnibook_brightness
+# REQUIRE: LOGIN
+# KEYWORD: shutdown
+
+. /etc/rc.subr
+name=omnibook_brightness
+rcvar=${name}_enable
+load_rc_config "$name"
+: "${omnibook_brightness_enable:=NO}"
+command=/usr/sbin/daemon
+pidfile=/var/run/${name}.pid
+command_args="-P $pidfile -S -T $name /usr/local/libexec/omnibook-brightness.py"
+run_rc_command "$1"
