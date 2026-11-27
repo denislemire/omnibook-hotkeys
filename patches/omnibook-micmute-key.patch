@@ -1,0 +1,49 @@
+--- a/sys/dev/atkbdc/atkbd.c
++++ b/sys/dev/atkbdc/atkbd.c
+@@ -69,6 +69,7 @@
+ #ifdef EVDEV_SUPPORT
+ 	struct evdev_dev *ks_evdev;
+ 	int		ks_evdev_state;
++	bool		ks_hp_micmute;
+ #endif
+ } atkbd_state_t;
+ 
+@@ -471,6 +472,12 @@
+ #ifdef EVDEV_SUPPORT
+ 		/* register as evdev provider on first init */
+ 		if (state->ks_evdev == NULL) {
++			char *sku = kern_getenv("smbios.system.sku");
++
++			state->ks_hp_micmute = sku != NULL &&
++			    strcmp(sku, "B8MX7UA#ABL") == 0;
++			if (sku != NULL)
++				freeenv(sku);
+ 			snprintf(phys_loc, sizeof(phys_loc), "atkbd%d", unit);
+ 			evdev = evdev_alloc();
+ 			evdev_set_name(evdev, "AT keyboard");
+@@ -483,6 +490,8 @@
+ 			evdev_support_event(evdev, EV_LED);
+ 			evdev_support_event(evdev, EV_REP);
+ 			evdev_support_all_known_keys(evdev);
++			if (state->ks_hp_micmute)
++				evdev_support_key(evdev, KEY_MICMUTE);
+ 			evdev_support_led(evdev, LED_NUML);
+ 			evdev_support_led(evdev, LED_CAPSL);
+ 			evdev_support_led(evdev, LED_SCROLLL);
+@@ -692,8 +701,14 @@
+ 			evdev_sync(state->ks_evdev);
+ 		}
+ 
+-		keycode = evdev_scancode2key(&state->ks_evdev_state,
+-		    scancode);
++		/* HP OmniBook 5 sends E0 02 / E0 82 for microphone mute. */
++		if (state->ks_hp_micmute && state->ks_evdev_state == 0xe0 &&
++		    (scancode & 0x7f) == 0x02) {
++			state->ks_evdev_state = 0;
++			keycode = KEY_MICMUTE;
++		} else
++			keycode = evdev_scancode2key(&state->ks_evdev_state,
++			    scancode);
+ 
+ 		if (keycode != KEY_RESERVED) {
+ 			evdev_push_event(state->ks_evdev, EV_KEY,

@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=OmniBook microphone mute indicator
+Exec=/usr/local/libexec/omnibook-micmute
+OnlyShowIn=GNOME;
+NoDisplay=true
