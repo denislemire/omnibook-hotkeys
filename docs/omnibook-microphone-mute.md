@@ -14,11 +14,21 @@ The [HDA driver patch](../patches/omnibook-micmute-led.patch) exposes `/dev/led/
 
 The [session listener](../tools/omnibook-micmute/omnibook-micmute.c) is a C client of libpulse. It subscribes to source changes, reads the initial state after subscribing, and reconnects if PulseAudio restarts. GNOME starts it through XDG autostart. Both GNOME and PulseAudio use their existing interfaces.
 
-On the target FreeBSD system, run `./tools/omnibook-micmute/build-package.sh` from the checkout and install the resulting local package with `pkg add ./omnibook-micmute-0.1.pkg`. It installs the executable in `/usr/local/libexec` and its desktop entry in `/usr/local/etc/xdg/autostart`. Grant the desktop user's group write access to this single LED. On the test laptop the user belongs to operator, with these entries in `/etc/devfs.conf`:
+On the target FreeBSD system, run `tools/omnibook-micmute/build-package.sh` from the checkout and install the resulting local package with `pkg add ./omnibook-micmute-0.2.pkg`. It installs the executable in `/usr/local/libexec` and its desktop entry in `/usr/local/etc/xdg/autostart`. Grant the desktop user's group write access to this single LED. On the test laptop the user belongs to operator, with these entries in `/etc/devfs.conf`:
 
 ```
 own led/omnibook-micmute root:operator
 perm led/omnibook-micmute 0660
+own led/omnibook-speaker-mute root:operator
+perm led/omnibook-speaker-mute 0660
 ```
 
 After GNOME login, toggle the microphone from the key and from Settings. Compare the key LED with `pactl get-source-mute oss_input.dsp0`. The temporary GPIO test verified both polarities and desktop synchronization. Repeat this check after booting the packaged integration.
+
+## F5 speaker mute indicator
+
+Apply the [speaker LED patch](../patches/omnibook-speaker-led.patch) after the microphone LED patch. The same local package (version 0.2) watches PulseAudio's default output and server changes as well as the built-in microphone. The two indicators are independent.
+
+On HP subsystem `103c:8e0a`, setting Realtek ALC245 vendor node `0x20`, coefficient `0x0b`, bits 3:2 to binary `10` lit F5. The original unmuted setting was binary `01`. The driver exposes this control as `/dev/led/omnibook-speaker-mute`. After desktop login, compare F5 with `pactl get-sink-mute @DEFAULT_SINK@` while toggling output mute in GNOME.
+
+The HPBSD-audio-leds boot test used package 0.2. Both LED device nodes appeared, one GNOME listener process was running, and the tester reported the indicators working.

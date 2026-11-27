@@ -1,0 +1,85 @@
+--- a/sys/dev/sound/pci/hda/hdaa.h
++++ b/sys/dev/sound/pci/hda/hdaa.h
+@@ -187,6 +187,9 @@
+ #include <sys/_task.h>
+ 
+ struct hdaa_devinfo {
++	struct cdev *speaker_led;
++	struct task speaker_led_task;
++	u_int speaker_led_on;
+ 	struct cdev *mic_led;
+ 	struct task mic_led_task;
+ 	u_int mic_led_on;
+--- a/sys/dev/sound/pci/hda/hdaa.c
++++ b/sys/dev/sound/pci/hda/hdaa.c
+@@ -5309,6 +5309,39 @@
+ 
+ 	atomic_store_rel_int(&di->mic_led_on, on != 0);
+ 	taskqueue_enqueue(taskqueue_thread, &di->mic_led_task);
++}
++
++/* ALC245 vendor widget 0x20, coefficient 0x0b bits 3:2. */
++static void
++hdaa_speaker_led_apply(void *arg, int pending __unused)
++{
++	struct hdaa_devinfo *di = arg;
++	device_t dev = di->dev;
++	uint32_t index, value, bits;
++
++	hdaa_lock(di);
++	index = hda_command(dev, HDA_CMD_GET_COEFF_INDEX(0, 0x20));
++	if (index <= 0xffff) {
++		hda_command(dev, HDA_CMD_SET_COEFF_INDEX(0, 0x20, 0x0b));
++		value = hda_command(dev, HDA_CMD_GET_PROCESSING_COEFF(0, 0x20));
++		bits = atomic_load_acq_int(&di->speaker_led_on) ? 8 : 4;
++		if (value <= 0xffff && (value & 0x0c) != bits) {
++			hda_command(dev, HDA_CMD_SET_COEFF_INDEX(0, 0x20, 0x0b));
++			hda_command(dev, HDA_CMD_SET_PROCESSING_COEFF(0, 0x20,
++			    (value & ~0x0c) | bits));
++		}
++		hda_command(dev, HDA_CMD_SET_COEFF_INDEX(0, 0x20, index));
++	}
++	hdaa_unlock(di);
++}
++
++static void
++hdaa_speaker_led_set(void *arg, int on)
++{
++	struct hdaa_devinfo *di = arg;
++
++	atomic_store_rel_int(&di->speaker_led_on, on != 0);
++	taskqueue_enqueue(taskqueue_thread, &di->speaker_led_task);
+ }
+ 
+ static void
+@@ -6729,6 +6762,8 @@
+ 	HDA_BOOTHVERBOSE(
+ 		device_printf(dev, "Resume done\n");
+ 	);
++	if (devinfo->speaker_led != NULL)
++		taskqueue_enqueue(taskqueue_thread, &devinfo->speaker_led_task);
+ 	return (0);
+ }
+ 
+@@ -6840,6 +6875,10 @@
+ 	    hda_get_device_id(dev) == 0x0245 &&
+ 	    hda_get_subsystem_id(dev) == 0x103c8e0a &&
+ 	    HDA_PARAM_GPIO_COUNT_NUM_GPIO(devinfo->gpio_cap) >= 3) {
++		TASK_INIT(&devinfo->speaker_led_task, 0, hdaa_speaker_led_apply,
++		    devinfo);
++		devinfo->speaker_led = led_create_state(hdaa_speaker_led_set,
++		    devinfo, "omnibook-speaker-mute", 0);
+ 		TASK_INIT(&devinfo->mic_led_task, 0, hdaa_mic_led_apply, devinfo);
+ 		devinfo->mic_led = led_create_state(hdaa_mic_led_set, devinfo,
+ 		    "omnibook-micmute", 0);
+@@ -6857,6 +6896,10 @@
+ 	if ((error = bus_generic_detach(dev)) != 0)
+ 		return (error);
+ 
++	if (devinfo->speaker_led != NULL) {
++		led_destroy(devinfo->speaker_led);
++		taskqueue_drain(taskqueue_thread, &devinfo->speaker_led_task);
++	}
+ 	if (devinfo->mic_led != NULL) {
+ 		led_destroy(devinfo->mic_led);
+ 		taskqueue_drain(taskqueue_thread, &devinfo->mic_led_task);

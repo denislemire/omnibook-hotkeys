@@ -5,23 +5,34 @@
 #include <unistd.h>
 
 static const char source[] = "oss_input.dsp0";
-static const char led[] = "/dev/led/omnibook-micmute";
+static const char mic_led[] = "/dev/led/omnibook-micmute";
+
+static void
+write_led(const char *path, int muted, pa_mainloop *loop)
+{
+	char state = muted ? '1' : '0';
+	int fd = open(path, O_WRONLY | O_CLOEXEC);
+
+	if (fd < 0 || write(fd, &state, 1) != 1)
+		pa_mainloop_quit(loop, 1);
+	if (fd >= 0)
+		close(fd);
+}
 
 static void
 sync_led(pa_context *ctx, const pa_source_info *info, int end, void *data)
 {
-	int fd;
-	char state;
-
-	if (end != 0 || info == NULL || strcmp(info->name, source) != 0)
-		return;
-	state = info->mute ? '1' : '0';
-	fd = open(led, O_WRONLY | O_CLOEXEC);
-	if (fd < 0 || write(fd, &state, 1) != 1)
-		pa_mainloop_quit(data, 1);
-	if (fd >= 0)
-		close(fd);
 	(void)ctx;
+	if (end == 0 && info != NULL && strcmp(info->name, source) == 0)
+		write_led(mic_led, info->mute, data);
+}
+
+static void
+sync_speaker(pa_context *ctx, const pa_sink_info *info, int end, void *data)
+{
+	(void)ctx;
+	if (end == 0 && info != NULL)
+		write_led("/dev/led/omnibook-speaker-mute", info->mute, data);
 }
 
 static void
@@ -34,9 +45,14 @@ release_op(pa_operation *op, pa_mainloop *loop)
 }
 
 static void
-source_changed(pa_context *ctx, pa_subscription_event_type_t event,
+audio_changed(pa_context *ctx, pa_subscription_event_type_t event,
     uint32_t index, void *data)
 {
+	if ((event & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) != PA_SUBSCRIPTION_EVENT_SOURCE) {
+		release_op(pa_context_get_sink_info_by_name(ctx, "@DEFAULT_SINK@",
+		    sync_speaker, data), data);
+		return;
+	}
 	if ((event & PA_SUBSCRIPTION_EVENT_TYPE_MASK) != PA_SUBSCRIPTION_EVENT_REMOVE)
 		release_op(pa_context_get_source_info_by_index(ctx, index, sync_led,
 		    data), data);
@@ -45,10 +61,12 @@ source_changed(pa_context *ctx, pa_subscription_event_type_t event,
 static void
 subscribed(pa_context *ctx, int success, void *data)
 {
-	if (success)
+	if (success) {
+		release_op(pa_context_get_sink_info_by_name(ctx, "@DEFAULT_SINK@",
+		    sync_speaker, data), data);
 		release_op(pa_context_get_source_info_by_name(ctx, source, sync_led,
 		    data), data);
-	else
+	} else
 		pa_mainloop_quit(data, 1);
 }
 
@@ -57,8 +75,9 @@ connection_changed(pa_context *ctx, void *data)
 {
 	switch (pa_context_get_state(ctx)) {
 	case PA_CONTEXT_READY:
-		pa_context_set_subscribe_callback(ctx, source_changed, data);
-		release_op(pa_context_subscribe(ctx, PA_SUBSCRIPTION_MASK_SOURCE,
+		pa_context_set_subscribe_callback(ctx, audio_changed, data);
+		release_op(pa_context_subscribe(ctx, PA_SUBSCRIPTION_MASK_SOURCE |
+		    PA_SUBSCRIPTION_MASK_SINK | PA_SUBSCRIPTION_MASK_SERVER,
 		    subscribed, data), data);
 		break;
 	case PA_CONTEXT_FAILED:
@@ -78,7 +97,7 @@ main(void)
 		if (loop == NULL)
 			return (1);
 		pa_context *ctx = pa_context_new(pa_mainloop_get_api(loop),
-		    "OmniBook microphone LED");
+		    "OmniBook audio mute LEDs");
 		if (ctx == NULL)
 			return (1);
 		pa_context_set_state_callback(ctx, connection_changed, loop);
