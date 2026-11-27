@@ -13,9 +13,9 @@ install -m 0444 "$src/omnibook-micmute.desktop" "$prefix/etc/xdg/autostart/"
 version=$(pkg query '%v' pulseaudio)
 cat > "$stage/manifest" <<MANIFEST
 name: omnibook-micmute
-version: "0.1"
+version: "0.2"
 origin: local/omnibook-micmute
-comment: Synchronize the HP OmniBook microphone LED with PulseAudio
+comment: Synchronize the HP OmniBook audio mute LEDs with PulseAudio
 desc: GNOME session client for the HPBSD microphone indicator.
 maintainer: local@localhost
 www: https://github.com/denislemire/omnibook-hotkeys

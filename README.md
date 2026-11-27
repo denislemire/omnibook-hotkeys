@@ -7,18 +7,22 @@ Hardware-tested patches for the HP OmniBook 5 16-ba1xxx (SKU `B8MX7UA#ABL`) on F
 | Display brightness | Raises or lowers the internal Intel panel by five percentage points per press, including outside GNOME. | [ACPI video and backlight patch](patches/omnibook-acpi-video.patch) |
 | Microphone mute | Sends `KEY_MICMUTE` so GNOME can toggle capture. | [AT keyboard patch](patches/omnibook-micmute-key.patch) |
 | Microphone-key LED | Lights when PulseAudio mutes the built-in microphone, including through GNOME Settings. | [HDA LED patch](patches/omnibook-micmute-led.patch) and [C session listener](tools/omnibook-micmute/) |
+| F5 speaker-mute LED | Lights when the default PulseAudio output is muted. The same C listener drives both indicators. | [Speaker LED patch](patches/omnibook-speaker-led.patch) |
 
 ## Building and testing
 
-Check the model with `kenv smbios.system.sku`. From the root of this repository, check whether the patches apply to your FreeBSD source checkout:
+Check the model with `kenv smbios.system.sku`. From the root of this repository, apply the patches in order to a clean kernel source worktree. The speaker LED patch extends the microphone LED driver.
 
 ```sh
-git -C /usr/src apply --check "$PWD"/patches/*.patch
+src=/path/to/freebsd-src
+for patch in omnibook-acpi-video omnibook-micmute-key omnibook-micmute-led omnibook-speaker-led; do
+    git -C "$src" apply "$PWD/patches/$patch.patch" || break
+done
 ```
 
-Apply the patches to your kernel build tree, then build the kernel and its matching modules, including `acpi_video` and `snd_hda`. Boot the resulting kernel and load its `acpi_video` module. If the original brightness service is enabled, stop and disable it before testing the native handler.
+After all four apply, build the kernel and its matching modules, including `acpi_video` and `snd_hda`. Boot the resulting kernel and load its `acpi_video` module. If the original brightness service is enabled, stop and disable it before testing the native handler.
 
-The microphone LED uses an unprivileged C listener linked to libpulse. The local FreeBSD package installs it in `/usr/local/libexec` and starts it at GNOME login. See the [package, permissions, and verification instructions](docs/omnibook-microphone-mute.md).
+The audio LEDs use an unprivileged C listener linked to libpulse. The local FreeBSD package installs it in `/usr/local/libexec` and starts it at GNOME login. See the [package, permissions, and verification instructions](docs/omnibook-microphone-mute.md).
 
 ## Why the brightness patch is needed
 
