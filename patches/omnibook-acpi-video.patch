@@ -1,0 +1,329 @@
+--- a/sys/dev/acpica/acpi_video.c
++++ b/sys/dev/acpica/acpi_video.c
+@@ -42,6 +42,7 @@
+ #include <contrib/dev/acpica/include/acpi.h>
+ 
+ #include <dev/acpica/acpivar.h>
++#include <dev/backlight/backlight.h>
+ 
+ #ifdef EVDEV_SUPPORT
+ #include <dev/evdev/input.h>
+@@ -59,6 +60,7 @@
+ 	} vo_unit;
+ 	int		vo_hasbqc;	/* Query method is present. */
+ 	int		vo_level;	/* Cached level when !vo_hasbqc. */
++	bool		intel_panel;
+ 	int		vo_brightness;
+ 	int		vo_fullpower;
+ 	int		vo_economy;
+@@ -74,6 +76,7 @@
+ STAILQ_HEAD(acpi_video_output_queue, acpi_video_output);
+ 
+ struct acpi_video_softc {
++	ACPI_HANDLE		intel_panel;
+ 	device_t		device;
+ 	ACPI_HANDLE		handle;
+ 	struct acpi_video_output_queue vid_outputs;
+@@ -110,7 +113,7 @@
+ 		    void(*)(ACPI_HANDLE, UINT32, void *), void *);
+ static int	vo_get_brightness_levels(ACPI_HANDLE, int **);
+ static int	vo_get_brightness(struct acpi_video_output *);
+-static void	vo_set_brightness(struct acpi_video_output *, int);
++static int	vo_set_brightness(struct acpi_video_output *, int);
+ static UINT32	vo_get_device_status(ACPI_HANDLE);
+ static UINT32	vo_get_graphics_state(ACPI_HANDLE);
+ static void	vo_set_device_state(ACPI_HANDLE, UINT32);
+@@ -533,6 +536,7 @@
+ 
+ 	STAILQ_FOREACH(vo, &sc->vid_outputs, vo_next) {
+ 		if (vo->adr == adr) {
++			vo->intel_panel = (handle == sc->intel_panel);
+ 			acpi_video_vo_bind(vo, handle);
+ 			return;
+ 		}
+@@ -542,6 +546,7 @@
+ #ifdef EVDEV_SUPPORT
+ 		vo->evdev = sc->evdev;
+ #endif
++		vo->intel_panel = (handle == sc->intel_panel);
+ 		acpi_video_vo_bind(vo, handle);
+ 		STAILQ_INSERT_TAIL(&sc->vid_outputs, vo, vo_next);
+ 	}
+@@ -550,9 +555,32 @@
+ static void
+ acpi_video_bind_outputs(struct acpi_video_softc *sc)
+ {
++	ACPI_HANDLE gpu, panel;
++	char *sku;
++	bool omnibook;
+ 
+ 	ACPI_SERIAL_ASSERT(video);
+ 	vid_enum_outputs(sc->handle, acpi_video_bind_outputs_subr, sc);
++	if (!STAILQ_EMPTY(&sc->vid_outputs))
++		return;
++
++	/*
++	 * On this HP OmniBook the brightness hotkeys notify DD1F, but
++	 * normal _DOD/_ADR enumeration does not find the panel.
++	 */
++	sku = kern_getenv("smbios.system.sku");
++	if (sku == NULL)
++		return;
++	omnibook = strcmp(sku, "B8MX7UA#ABL") == 0;
++	freeenv(sku);
++	if (!omnibook ||
++	    ACPI_FAILURE(AcpiGetHandle(NULL, "\\_SB.PC00.GFX0", &gpu)) ||
++	    gpu != sc->handle ||
++	    ACPI_FAILURE(AcpiGetHandle(gpu, "DD1F", &panel)))
++		return;
++
++	sc->intel_panel = panel;
++	acpi_video_bind_outputs_subr(panel, DOD_DEVID_LCD, sc);
+ }
+ 
+ static struct acpi_video_output *
+@@ -809,6 +837,14 @@
+ 		goto out;
+ 	}
+ 
++	if (vo->intel_panel && (notify == VID_NOTIFY_INC_BRN ||
++	    notify == VID_NOTIFY_DEC_BRN)) {
++		new_level = notify == VID_NOTIFY_INC_BRN ? MIN(100, level + 5) :
++		    MAX(0, level - 5);
++		if (new_level != level && vo_set_brightness(vo, new_level) == 0)
++			vo->vo_brightness = new_level;
++		goto out;
++	}
+ 	new_level = level;
+ 	switch (notify) {
+ 	case VID_NOTIFY_CYCLE_BRN:
+@@ -906,6 +942,13 @@
+ 	if (level == -1)
+ 		level = preset;
+ 
++	if (vo->intel_panel && req->newptr == NULL) {
++		level = vo_get_brightness(vo);
++		if (level < 0) {
++			err = ENXIO;
++			goto out;
++		}
++	}
+ 	err = sysctl_handle_int(oidp, &level, 0, req);
+ 	if (err != 0 || req->newptr == NULL)
+ 		goto out;
+@@ -916,8 +959,9 @@
+ 
+ 	if (level != -1 && (err = acpi_video_vo_check_level(vo, level)))
+ 		goto out;
+-	vo->vo_brightness = level;
+-	vo_set_brightness(vo, (level == -1) ? preset : level);
++	err = vo_set_brightness(vo, (level == -1) ? preset : level);
++	if (err == 0)
++		vo->vo_brightness = level;
+ 
+ out:
+ 	ACPI_SERIAL_END(video_output);
+@@ -1149,6 +1193,16 @@
+ 		status = AE_OK;
+ 	}
+ 	return (status);
++}
++
++static int
++intel_panel_brightness(bool write, int *level)
++{
++	int error = ENXIO;
++
++	EVENTHANDLER_INVOKE(backlight_brightness, "backlight/intel_backlight0",
++	    write, level, &error);
++	return (error);
+ }
+ 
+ static int
+@@ -1158,6 +1212,13 @@
+ 	ACPI_STATUS status;
+ 
+ 	ACPI_SERIAL_ASSERT(video_output);
++	if (vo->intel_panel) {
++		int native_level = 0;
++
++		if (intel_panel_brightness(false, &native_level) != 0)
++			return (-1);
++		return (native_level);
++	}
+ 	status = vo_get_bqc(vo, &level);
+ 	if (ACPI_FAILURE(status)) {
+ 		printf("can't evaluate %s._BQC - %s\n", acpi_name(vo->handle),
+@@ -1170,22 +1231,29 @@
+ 	return (level);
+ }
+ 
+-static void
++static int
+ vo_set_brightness(struct acpi_video_output *vo, int level)
+ {
+ 	char notify_buf[16];
+ 	ACPI_STATUS status;
+ 
+ 	ACPI_SERIAL_ASSERT(video_output);
+-	status = acpi_SetInteger(vo->handle, "_BCM", level);
+-	if (ACPI_FAILURE(status)) {
+-		printf("can't evaluate %s._BCM - %s\n",
+-		    acpi_name(vo->handle), AcpiFormatException(status));
++	if (vo->intel_panel) {
++		int error = intel_panel_brightness(true, &level);
++		if (error != 0)
++			return (error);
+ 	} else {
+-		vo->vo_level = level;
++		status = acpi_SetInteger(vo->handle, "_BCM", level);
++		if (ACPI_FAILURE(status)) {
++			printf("can't evaluate %s._BCM - %s\n",
++			    acpi_name(vo->handle), AcpiFormatException(status));
++			return (EIO);
++		}
+ 	}
++	vo->vo_level = level;
+ 	snprintf(notify_buf, sizeof(notify_buf), "notify=%d", level);
+ 	devctl_notify("ACPI", "Video", "brightness", notify_buf);
++	return (0);
+ }
+ 
+ static UINT32
+--- a/sys/dev/backlight/backlight.c
++++ b/sys/dev/backlight/backlight.c
+@@ -47,6 +47,8 @@
+ struct backlight_softc {
+ 	struct cdev *cdev;
+ 	struct cdev *alias;
++	eventhandler_tag brightness_handler;
++	struct sx io_lock;
+ 	int unit;
+ 	device_t dev;
+ 	uint32_t cached_brightness;
+@@ -59,10 +61,11 @@
+ 	struct backlight_softc *sc;
+ 	struct backlight_props props;
+ 	struct backlight_info info;
+-	int error;
++	int error = 0;
+ 
+ 	sc = dev->si_drv1;
+ 
++	sx_xlock(&sc->io_lock);
+ 	switch (cmd) {
+ 	case BACKLIGHTGETSTATUS:
+ 		/* Call the driver function so it fills up the props */
+@@ -76,7 +79,7 @@
+ 	case BACKLIGHTUPDATESTATUS:
+ 		bcopy(data, &props, sizeof(struct backlight_props));
+ 		if (props.brightness == sc->cached_brightness)
+-			return (0);
++			break;
+ 		error = BACKLIGHT_UPDATE_STATUS(sc->dev, &props);
+ 		if (error == 0) {
+ 			bcopy(&props, data, sizeof(struct backlight_props));
+@@ -91,6 +94,7 @@
+ 		break;
+ 	}
+ 
++	sx_xunlock(&sc->io_lock);
+ 	return (error);
+ }
+ 
+@@ -100,6 +104,33 @@
+ 	.d_name =	"backlight",
+ };
+ 
++static void
++backlight_brightness_request(void *arg, const char *alias, bool write,
++    int *level, int *error)
++{
++	struct backlight_softc *sc = arg;
++	struct backlight_props props = { 0 };
++
++	if (sc->alias == NULL || strcmp(devtoname(sc->alias), alias) != 0)
++		return;
++	if (write && (*level < 0 || *level > 100)) {
++		*error = EINVAL;
++		return;
++	}
++	sx_xlock(&sc->io_lock);
++	if (write) {
++		props.brightness = *level;
++		*error = BACKLIGHT_UPDATE_STATUS(sc->dev, &props);
++	} else {
++		*error = BACKLIGHT_GET_STATUS(sc->dev, &props);
++		if (*error == 0)
++			*level = props.brightness;
++	}
++	if (*error == 0)
++		sc->cached_brightness = props.brightness;
++	sx_xunlock(&sc->io_lock);
++}
++
+ struct cdev *
+ backlight_register(const char *name, device_t dev)
+ {
+@@ -113,6 +144,7 @@
+ 	sx_xlock(&backlight_sx);
+ 	sc->unit = alloc_unr(backlight_unit);
+ 	sc->dev = dev;
++	sx_init(&sc->io_lock, "backlight io");
+ 	make_dev_args_init(&args);
+ 	args.mda_flags = MAKEDEV_CHECKNAME | MAKEDEV_WAITOK;
+ 	args.mda_devsw = &backlight_cdevsw;
+@@ -133,11 +165,19 @@
+ 
+ 	sx_xunlock(&backlight_sx);
+ 
++	sx_xlock(&sc->io_lock);
+ 	error = BACKLIGHT_GET_STATUS(sc->dev, &props);
+-	sc->cached_brightness = props.brightness;
++	if (error == 0)
++		sc->cached_brightness = props.brightness;
++	sx_xunlock(&sc->io_lock);
++	sc->brightness_handler = EVENTHANDLER_REGISTER(backlight_brightness,
++	    backlight_brightness_request, sc, EVENTHANDLER_PRI_ANY);
+ 
+ 	return (sc->cdev);
+ fail:
++	free_unr(backlight_unit, sc->unit);
++	sx_destroy(&sc->io_lock);
++	free(sc, M_BACKLIGHT);
+ 	sx_xunlock(&backlight_sx);
+ 	return (NULL);
+ }
+@@ -148,9 +188,12 @@
+ 	struct backlight_softc *sc;
+ 
+ 	sc = dev->si_drv1;
++	EVENTHANDLER_DEREGISTER(backlight_brightness, sc->brightness_handler);
+ 	sx_xlock(&backlight_sx);
+ 	free_unr(backlight_unit, sc->unit);
+ 	destroy_dev(dev);
++	sx_destroy(&sc->io_lock);
++	free(sc, M_BACKLIGHT);
+ 	sx_xunlock(&backlight_sx);
+ 	return (0);
+ }
+--- a/sys/dev/backlight/backlight.h
++++ b/sys/dev/backlight/backlight.h
+@@ -25,7 +25,17 @@
+  * SUCH DAMAGE.
+  */
+ 
++#ifndef _DEV_BACKLIGHT_BACKLIGHT_H_
++#define _DEV_BACKLIGHT_BACKLIGHT_H_
++
+ #include <sys/backlight.h>
++#include <sys/eventhandler.h>
+ 
+ struct cdev *backlight_register(const char *name, device_t dev);
+ int backlight_destroy(struct cdev *dev);
++
++/* Synchronous brightness request for a registered backlight alias. */
++typedef void (*backlight_brightness_fn)(void *, const char *, bool, int *, int *);
++EVENTHANDLER_DECLARE(backlight_brightness, backlight_brightness_fn);
++
++#endif
