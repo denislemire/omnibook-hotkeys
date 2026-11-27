@@ -1,0 +1,84 @@
+--- a/sys/dev/sound/pci/hda/hdaa.h
++++ b/sys/dev/sound/pci/hda/hdaa.h
+@@ -184,7 +184,12 @@
+ 	int		autorecsrc;
+ };
+ 
++#include <sys/_task.h>
++
+ struct hdaa_devinfo {
++	struct cdev *mic_led;
++	struct task mic_led_task;
++	u_int mic_led_on;
+ 	device_t		dev;
+ 	struct mtx		*lock;
+ 	nid_t			nid;
+--- a/sys/dev/sound/pci/hda/hdaa.c
++++ b/sys/dev/sound/pci/hda/hdaa.c
+@@ -40,6 +40,7 @@
+ 
+ #include <sys/ctype.h>
+ #include <sys/taskqueue.h>
++#include <dev/led/led.h>
+ 
+ #include <dev/sound/pci/hda/hdac.h>
+ #include <dev/sound/pci/hda/hdaa.h>
+@@ -5283,6 +5284,31 @@
+ 			hdaa_dump_gpio(devinfo);
+ 		);
+ 	}
++}
++
++/* The LED callback runs under led(4)'s mutex. Defer codec I/O. */
++static void
++hdaa_mic_led_apply(void *arg, int pending __unused)
++{
++	struct hdaa_devinfo *di = arg;
++	uint32_t action;
++
++	hdaa_lock(di);
++	action = atomic_load_acq_int(&di->mic_led_on) ?
++	    HDAA_GPIO_CLEAR(2) : HDAA_GPIO_SET(2);
++	di->gpio = (di->gpio & ~HDAA_GPIO_MASK(2)) | action;
++	di->newgpio = di->gpio;
++	hdaa_gpio_commit(di);
++	hdaa_unlock(di);
++}
++
++static void
++hdaa_mic_led_set(void *arg, int on)
++{
++	struct hdaa_devinfo *di = arg;
++
++	atomic_store_rel_int(&di->mic_led_on, on != 0);
++	taskqueue_enqueue(taskqueue_thread, &di->mic_led_task);
+ }
+ 
+ static void
+@@ -6810,6 +6836,14 @@
+ 	    SYSCTL_CHILDREN(device_get_sysctl_tree(dev)), OID_AUTO,
+ 	    "init_clear", CTLFLAG_RW,
+ 	    &devinfo->init_clear, 1,"Clear initial pin widget configuration");
++	if (hda_get_vendor_id(dev) == 0x10ec &&
++	    hda_get_device_id(dev) == 0x0245 &&
++	    hda_get_subsystem_id(dev) == 0x103c8e0a &&
++	    HDA_PARAM_GPIO_COUNT_NUM_GPIO(devinfo->gpio_cap) >= 3) {
++		TASK_INIT(&devinfo->mic_led_task, 0, hdaa_mic_led_apply, devinfo);
++		devinfo->mic_led = led_create_state(hdaa_mic_led_set, devinfo,
++		    "omnibook-micmute", 0);
++	}
+ 	bus_attach_children(dev);
+ 	return (0);
+ }
+@@ -6822,6 +6856,11 @@
+ 
+ 	if ((error = bus_generic_detach(dev)) != 0)
+ 		return (error);
++
++	if (devinfo->mic_led != NULL) {
++		led_destroy(devinfo->mic_led);
++		taskqueue_drain(taskqueue_thread, &devinfo->mic_led_task);
++	}
+ 
+ 	hdaa_lock(devinfo);
+ 	hdaa_unconfigure(dev);

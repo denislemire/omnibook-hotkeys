@@ -1,8 +1,26 @@
-# omnibook_brightness
+# HP OmniBook hotkeys for FreeBSD
 
-On the HP OmniBook 5 Laptop 16-ba1xxx (SKU `B8MX7UA#ABL`), the brightness keys work with a locally patched FreeBSD 15.2-STABLE kernel. The internal panel changes brightness directly through the Intel backlight driver. [Tested kernel patch](patches/omnibook-acpi-video.patch)
+Hardware-tested patches for the HP OmniBook 5 16-ba1xxx (SKU `B8MX7UA#ABL`) on FreeBSD 15.2-STABLE.
 
-## Native kernel support
+| Control | What it does | Implementation |
+| --- | --- | --- |
+| Display brightness | Raises or lowers the internal Intel panel by five percentage points per press, including outside GNOME. | [ACPI video and backlight patch](patches/omnibook-acpi-video.patch) |
+| Microphone mute | Sends `KEY_MICMUTE` so GNOME can toggle capture. | [AT keyboard patch](patches/omnibook-micmute-key.patch) |
+| Microphone-key LED | Lights when PulseAudio mutes the built-in microphone, including through GNOME Settings. | [HDA LED patch](patches/omnibook-micmute-led.patch) and [C session listener](tools/omnibook-micmute/) |
+
+## Building and testing
+
+Check the model with `kenv smbios.system.sku`. From the root of this repository, check whether the patches apply to your FreeBSD source checkout:
+
+```sh
+git -C /usr/src apply --check "$PWD"/patches/*.patch
+```
+
+Apply the patches to your kernel build tree, then build the kernel and its matching modules, including `acpi_video` and `snd_hda`. Boot the resulting kernel and load its `acpi_video` module. If the original brightness service is enabled, stop and disable it before testing the native handler.
+
+The microphone LED uses an unprivileged C listener linked to libpulse. The local FreeBSD package installs it in `/usr/local/libexec` and starts it at GNOME login. See the [package, permissions, and verification instructions](docs/omnibook-microphone-mute.md).
+
+## Why the brightness patch is needed
 
 The firmware sends ACPI notifications `0x86` (brighter) and `0x87` (dimmer) to the internal display object `\_SB.PC00.GFX0.DD1F`. On this laptop the stock `acpi_video` module attached to the GPU but enumerated no display outputs. The patch binds `DD1F` when enumeration finds no outputs on this SKU.
 
@@ -10,47 +28,6 @@ Binding the panel alone let FreeBSD receive the keys. Two dimmer presses moved t
 
 The patch changes both `acpi_video` and the kernel backlight framework. It was tested by booting a kernel and module built together, with the helper stopped. The tester observed the keys changing the panel brightness, and both `sysctl -n hw.acpi.video.lcd0.brightness` and `backlight -q -f /dev/backlight/intel_backlight0` reported 90%. The patch is a local hardware-tested change.
 
-## Python service for unpatched kernels
+## Unpatched kernels
 
-The original DTrace service runs independently of the desktop session. Use only one hotkey handler at a time.
-
-### Hardware and requirements
-
-The tested machine runs FreeBSD 15.2-STABLE on amd64 and reports SKU `B8MX7UA#ABL`. The helper checks that SKU at startup. It requires Python 3.12 at `/usr/local/bin/python3.12`, the native `backlight(8)` utility, an Intel panel backlight device, and root access to the DTrace FBT provider. The probe uses an internal ACPICA function and type whose availability can vary between kernel builds.
-
-Check the prerequisites on the target machine:
-
-```sh
-kenv smbios.system.sku
-/usr/local/bin/python3.12 --version
-backlight -q -f /dev/backlight/intel_backlight0
-sudo dtrace -l -n 'fbt::AcpiEvQueueNotifyRequest:entry'
-```
-
-### Install and test
-
-From the cloned repository, install the two executables and start the service:
-
-```sh
-sudo install -o root -g wheel -m 0555 omnibook-brightness.py /usr/local/libexec/omnibook-brightness.py
-sudo install -o root -g wheel -m 0555 omnibook_brightness /usr/local/etc/rc.d/omnibook_brightness
-sudo sysrc omnibook_brightness_enable=YES
-sudo service omnibook_brightness start
-sudo service omnibook_brightness status
-```
-
-Run `backlight -q -f /dev/backlight/intel_backlight0`, tap the dimmer key twice, then run it again. From 100% the expected result is 90%. One press of the brighter key should then give 95%. If the service exits, check `/var/log/messages` for messages tagged `omnibook_brightness`. If a future desktop or driver update starts handling the keys itself, stop this service and repeat the test to check for duplicate steps.
-
-### How it works
-
-On the tested firmware the embedded controller's ACPI methods `_Q11` and `_Q12` notify the display object `\_SB.PC00.GFX0.DD1F`. The service filters queued ACPI notifications by the four-byte node name `DD1F` and the two brightness codes. For `0x87` it runs `backlight decr 5`; for `0x86` it runs `backlight incr 5`. Both commands explicitly target the internal panel. It does not need keyboard capture, a GNOME shortcut, or an ambient-light sensor.
-
-During hardware testing on this SKU, two physical dimmer presses produced two `DD1F 0x87` notifications, and the prototype moved the panel from 100% to 90%. The installed rc service was verified running and enabled. A cold-boot test and an isolated brighter-key measurement were still outstanding at publication.
-
-### Uninstall
-
-```sh
-sudo service omnibook_brightness stop
-sudo sysrc -x omnibook_brightness_enable
-sudo rm /usr/local/etc/rc.d/omnibook_brightness /usr/local/libexec/omnibook-brightness.py
-```
+The original Python and DTrace service remains available for display brightness. [Installation and removal](docs/python-brightness-service.md)
