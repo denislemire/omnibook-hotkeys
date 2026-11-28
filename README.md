@@ -5,6 +5,7 @@ Hardware-tested patches for the HP OmniBook 5 16-ba1xxx (SKU `B8MX7UA#ABL`) on F
 | Control | What it does | Implementation |
 | --- | --- | --- |
 | Display brightness | Raises or lowers the internal Intel panel by five percentage points per press, including outside GNOME. | [ACPI video and backlight patch](patches/omnibook-acpi-video.patch) |
+| GNOME display brightness | Quick Settings controls the panel and follows hardware-key changes. | [Mutter and Shell patches and build instructions](docs/gnome-brightness.md) |
 | Microphone mute | Sends `KEY_MICMUTE` so GNOME can toggle capture. | [AT keyboard patch](patches/omnibook-micmute-key.patch) |
 | Microphone-key LED | Lights when PulseAudio mutes the built-in microphone, including through GNOME Settings. | [HDA LED patch](patches/omnibook-micmute-led.patch) and [C session listener](tools/omnibook-micmute/) |
 | F5 speaker-mute LED | Lights when the default PulseAudio output is muted. The same C listener drives both indicators. | [Speaker LED patch](patches/omnibook-speaker-led.patch) |

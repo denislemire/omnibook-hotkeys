@@ -1,0 +1,12 @@
+--- a/js/misc/brightnessManager.js
++++ b/js/misc/brightnessManager.js
+@@ -316,6 +316,9 @@
+         // Handle changed backlights
+         for (const scale of this._monitorScales.values()) {
+             if (scale.syncWithBacklight()) {
++                // The value notification above ran while updates were inhibited.
++                scale._scaleChanged = true;
++
+                 // disable dimming for all if we have a single system initiated
+                 // backlight change
+                 this._dimmingEnabled = false;
