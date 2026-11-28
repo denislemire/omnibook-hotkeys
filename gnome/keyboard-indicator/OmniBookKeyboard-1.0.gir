@@ -1,0 +1,10 @@
+<?xml version="1.0"?>
+<repository version="1.2" xmlns="http://www.gtk.org/introspection/core/1.0"
+ xmlns:c="http://www.gtk.org/introspection/c/1.0">
+  <include name="Clutter" version="51"/>
+  <namespace name="OmniBookKeyboard" version="1.0" shared-library="libomnibook-keyboard.so">
+    <function name="indicator_new" c:identifier="omnibook_keyboard_indicator_new">
+      <return-value transfer-ownership="none"><type name="Clutter.Actor" c:type="ClutterActor*"/></return-value>
+    </function>
+  </namespace>
+</repository>
