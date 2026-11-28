@@ -8,6 +8,7 @@ Hardware-tested patches for the HP OmniBook 5 16-ba1xxx (SKU `B8MX7UA#ABL`) on F
 | Microphone mute | Sends `KEY_MICMUTE` so GNOME can toggle capture. | [AT keyboard patch](patches/omnibook-micmute-key.patch) |
 | Microphone-key LED | Lights when PulseAudio mutes the built-in microphone, including through GNOME Settings. | [HDA LED patch](patches/omnibook-micmute-led.patch) and [C session listener](tools/omnibook-micmute/) |
 | F5 speaker-mute LED | Lights when the default PulseAudio output is muted. The same C listener drives both indicators. | [Speaker LED patch](patches/omnibook-speaker-led.patch) |
+| Keyboard illumination | Shows the firmware-selected level (0%, 50%, or 100%) in the GNOME top bar. | [Kernel module](tools/omnibook_kbdlight/) and [GNOME indicator](gnome/keyboard-indicator/) |
 
 ## Building and testing
 

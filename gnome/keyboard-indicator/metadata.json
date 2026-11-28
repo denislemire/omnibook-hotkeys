@@ -1,0 +1,6 @@
+{
+  "uuid": "kbdlight@omnibook",
+  "name": "OmniBook Keyboard Light",
+  "description": "Shows the keyboard illumination selected by the OmniBook firmware",
+  "shell-version": ["51"]
+}
