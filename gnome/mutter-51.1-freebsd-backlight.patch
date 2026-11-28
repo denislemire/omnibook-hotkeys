@@ -1,0 +1,200 @@
+diff --git a/src/backends/meta-backlight-freebsd.c b/src/backends/meta-backlight-freebsd.c
+new file mode 100644
+index 0000000..9d145ba
+--- /dev/null
++++ b/src/backends/meta-backlight-freebsd.c
+@@ -0,0 +1,134 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++
++#include "config.h"
++
++#include <sys/ioctl.h>
++#include <sys/backlight.h>
++#include <errno.h>
++#include <fcntl.h>
++#include <unistd.h>
++
++#include "backends/meta-backlight-freebsd.h"
++#include "backends/meta-backlight-private.h"
++
++#define PANEL_DEVICE "/dev/backlight/intel_backlight0"
++
++#define META_TYPE_BACKLIGHT_FREEBSD (meta_backlight_freebsd_get_type ())
++G_DECLARE_FINAL_TYPE (MetaBacklightFreebsd, meta_backlight_freebsd,
++                      META, BACKLIGHT_FREEBSD, MetaBacklight)
++
++struct _MetaBacklightFreebsd
++{
++  MetaBacklight parent_instance;
++  int fd;
++  guint poll_id;
++};
++
++G_DEFINE_TYPE (MetaBacklightFreebsd, meta_backlight_freebsd, META_TYPE_BACKLIGHT)
++
++static gboolean
++refresh_brightness (gpointer data)
++{
++  MetaBacklightFreebsd *self = data;
++  MetaBacklight *backlight = META_BACKLIGHT (self);
++  struct backlight_props props = { 0 };
++
++  if (!meta_backlight_has_pending (backlight) &&
++      ioctl (self->fd, BACKLIGHTGETSTATUS, &props) == 0 &&
++      props.brightness <= 100)
++    meta_backlight_update_brightness_target (backlight, props.brightness);
++
++  return G_SOURCE_CONTINUE;
++}
++
++static void
++set_brightness (MetaBacklight       *backlight,
++                int                  target,
++                GCancellable        *cancellable,
++                GAsyncReadyCallback  callback,
++                gpointer             user_data)
++{
++  MetaBacklightFreebsd *self = META_BACKLIGHT_FREEBSD (backlight);
++  g_autoptr (GTask) task = g_task_new (self, cancellable, callback, user_data);
++  struct backlight_props props = { .brightness = target };
++
++  if (g_task_return_error_if_cancelled (task))
++    return;
++
++  if (ioctl (self->fd, BACKLIGHTUPDATESTATUS, &props) < 0)
++    {
++      int err = errno;
++      g_task_return_new_error (task, G_IO_ERROR, g_io_error_from_errno (err),
++                               "Updating %s: %s", PANEL_DEVICE, g_strerror (err));
++      return;
++    }
++
++  g_task_return_int (task, target);
++}
++
++static int
++set_brightness_finish (MetaBacklight *backlight,
++                       GAsyncResult  *result,
++                       GError       **error)
++{
++  return g_task_propagate_int (G_TASK (result), error);
++}
++
++static void
++meta_backlight_freebsd_finalize (GObject *object)
++{
++  MetaBacklightFreebsd *self = META_BACKLIGHT_FREEBSD (object);
++
++  g_clear_handle_id (&self->poll_id, g_source_remove);
++  if (self->fd >= 0)
++    close (self->fd);
++
++  G_OBJECT_CLASS (meta_backlight_freebsd_parent_class)->finalize (object);
++}
++
++static void
++meta_backlight_freebsd_class_init (MetaBacklightFreebsdClass *klass)
++{
++  G_OBJECT_CLASS (klass)->finalize = meta_backlight_freebsd_finalize;
++  META_BACKLIGHT_CLASS (klass)->set_brightness = set_brightness;
++  META_BACKLIGHT_CLASS (klass)->set_brightness_finish = set_brightness_finish;
++}
++
++static void
++meta_backlight_freebsd_init (MetaBacklightFreebsd *self)
++{
++  self->fd = -1;
++}
++
++MetaBacklight *
++meta_backlight_freebsd_new (MetaBackend *backend)
++{
++  MetaBacklightFreebsd *self;
++  struct backlight_props props = { 0 };
++  struct backlight_info info = { 0 };
++  int fd;
++
++  fd = open (PANEL_DEVICE, O_RDWR | O_CLOEXEC);
++  if (fd < 0)
++    return NULL;
++
++  if (ioctl (fd, BACKLIGHTGETINFO, &info) < 0 ||
++      info.type != BACKLIGHT_TYPE_PANEL ||
++      ioctl (fd, BACKLIGHTGETSTATUS, &props) < 0 || props.brightness > 100)
++    {
++      close (fd);
++      return NULL;
++    }
++
++  self = g_object_new (META_TYPE_BACKLIGHT_FREEBSD,
++                       "backend", backend,
++                       "name", PANEL_DEVICE,
++                       "brightness-min", 0,
++                       "brightness-max", 100,
++                       NULL);
++  self->fd = fd;
++  meta_backlight_update_brightness_target (META_BACKLIGHT (self), props.brightness);
++  /* The FreeBSD backlight device has no brightness-change event. */
++  self->poll_id = g_timeout_add (250, refresh_brightness, self);
++  return META_BACKLIGHT (self);
++}
+diff --git a/src/backends/meta-backlight-freebsd.h b/src/backends/meta-backlight-freebsd.h
+new file mode 100644
+index 0000000..f48c9c1
+--- /dev/null
++++ b/src/backends/meta-backlight-freebsd.h
+@@ -0,0 +1,7 @@
++/* SPDX-License-Identifier: GPL-2.0-or-later */
++#pragma once
++
++#include "meta/meta-backlight.h"
++#include "meta/types.h"
++
++MetaBacklight * meta_backlight_freebsd_new (MetaBackend *backend);
+diff --git a/src/backends/native/meta-output-kms.c b/src/backends/native/meta-output-kms.c
+index 3e34148..35bfda9 100644
+--- a/src/backends/native/meta-output-kms.c
++++ b/src/backends/native/meta-output-kms.c
+@@ -26,6 +26,9 @@
+ #include <stdlib.h>
+ #include <string.h>
+ 
++#ifdef __FreeBSD__
++#include "backends/meta-backlight-freebsd.h"
++#endif
+ #include "backends/meta-backlight-sysfs-private.h"
+ #include "backends/meta-backlight-ref-white-private.h"
+ #include "backends/meta-color-device.h"
+@@ -444,6 +447,17 @@ meta_output_kms_create_backlight (MetaOutput  *output,
+       return META_BACKLIGHT (g_steal_pointer (&backlight_ref_white));
+     }
+ 
++#ifdef __FreeBSD__
++  if (output_info->connector_type == META_CONNECTOR_TYPE_eDP &&
++      g_strcmp0 (output_info->name, "eDP-1") == 0)
++    {
++      MetaBacklight *backlight = meta_backlight_freebsd_new (backend);
++
++      if (backlight)
++        return backlight;
++    }
++#endif
++
+   backlight_sysfs = meta_backlight_sysfs_new (backend,
+                                               output_info,
+                                               &local_error);
+diff --git a/src/meson.build b/src/meson.build
+index 60970ce..f790e57 100644
+--- a/src/meson.build
++++ b/src/meson.build
+@@ -806,6 +806,10 @@ mutter_sources += [
+   'backends/meta-udev.h',
+ ]
+ 
++if host_machine.system() == 'freebsd'
++  mutter_sources += ['backends/meta-backlight-freebsd.c']
++endif
++
+ mutter_private_enum_sources = [
+   'core/window-private.h',
+ ]
